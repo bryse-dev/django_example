@@ -25,7 +25,7 @@ SECRET_KEY = 'j0l+asy9u0=l&(p%$3#3$93njy)u8!g=-_ed&ie(9zzss$g4we'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["dogfish.fl.sprintlink.net"]
 
 
 # Application definition
@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'simple_search.api.apps.ApiConfig',
 ]
 
 MIDDLEWARE = [
