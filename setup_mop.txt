@@ -1,0 +1,12 @@
+cd ~/github
+git init <project>
+cd <project>
+python -m venv venv
+source venv/bin/activate
+pip install django
+pip install django-framework
+django-admin startproject <api-name>
+cd <api-name>
+django-admin startapp api
+cd ..
+python manage.py migrate
