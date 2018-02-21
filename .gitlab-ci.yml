@@ -1,0 +1,221 @@
+variables:
+    BUILD_LOG: ./build_log.txt #Create text file for CI to write to
+
+stages:
+  - test
+  - build
+  - load
+  - deploy
+
+######################################
+# test stage
+######################################
+
+test:
+  stage: test
+  artifacts:
+    paths:
+      - ./build_log.txt
+  except:
+    - master
+    - develop
+  script:
+    - docker build -t pygslb_unit_test .
+    - docker run --rm --hostname cihost -p 5000:80 pygslb_unit_test | tee -a $BUILD_LOG
+  tags:
+    - docker
+
+######################################
+# build stage
+######################################
+
+build_development:
+  stage: build
+  only:
+    - develop
+
+  script:
+    #login to noshub docker registry
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567
+
+    #rotate older images
+
+    #rotate previous -> old
+    - docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:dev-previous
+    - docker tag noshub.fl.sprintlink.net:4567/dns/pygslb:dev-previous noshub.fl.sprintlink.net:4567/dns/pygslb:dev-old
+    - docker push noshub.fl.sprintlink.net:4567/dns/pygslb:dev-old
+
+    #rotate latest -> previous
+    - docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest
+    - docker tag noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest noshub.fl.sprintlink.net:4567/dns/pygslb:dev-previous
+    - docker push noshub.fl.sprintlink.net:4567/dns/pygslb:dev-previous
+
+    #build latest
+    - docker build -t noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest .
+    - docker push noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest
+  tags:
+    - docker
+
+build_production:
+  stage: build
+  only:
+    - master
+
+  script:
+    #login to noshub docker registry
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567
+
+    #rotate older images
+
+    #rotate previous -> old
+    - docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:prod-previous
+    - docker tag noshub.fl.sprintlink.net:4567/dns/pygslb:prod-previous noshub.fl.sprintlink.net:4567/dns/pygslb:prod-old
+    - docker push noshub.fl.sprintlink.net:4567/dns/pygslb:prod-old
+
+    #rotate latest -> previous
+    - docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest
+    - docker tag noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest noshub.fl.sprintlink.net:4567/dns/pygslb:prod-previous
+    - docker push noshub.fl.sprintlink.net:4567/dns/pygslb:prod-previous
+
+    #build latest
+    - docker build -t noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest .
+    - docker push noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest
+  tags:
+    - docker
+
+
+######################################
+# load stage
+######################################
+
+load_development:
+  stage: load
+  only:
+    - develop
+  script:
+    - chmod 500 keys/gslb_host
+    - ssh -i ./keys/gslb_host root@mamba "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+    - ssh -i ./keys/gslb_host root@mamba "docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest"
+    - ssh -i ./keys/gslb_host root@viper "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+    - ssh -i ./keys/gslb_host root@viper "docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest"
+  tags:
+    - docker
+
+load_production:
+  stage: load
+  only:
+    - master
+  script:
+    - chmod 500 keys/gslb_host
+    - ssh -i ./keys/gslb_host root@mamba "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+    - ssh -i ./keys/gslb_host root@mamba "docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest"
+    - ssh -i ./keys/gslb_host root@viper "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+    - ssh -i ./keys/gslb_host root@viper "docker pull noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest"
+  tags:
+    - docker
+
+######################################
+# deploy stage
+######################################
+
+deploy_development:
+  stage: deploy
+  only:
+    - develop
+  script:
+    #so we can ssh into remote hosts
+    - chmod 500 keys/gslb_host
+
+
+    # soft shutdown, this allows the cache to be written to disk
+    - >-
+         curl
+         -f
+         -n
+         -X GET http://mamba:81/gslb/api/v1.0/server/shutdown
+         -d ''
+         -H "Accept: application/json"
+         -u admin:DNAops12
+
+    # sleep to ensure docker container shutsdown proper
+    - sleep 10
+
+    # login to gitlab so we ensure we can access the remote repo if needed
+    - ssh -i ./keys/gslb_host root@mamba "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+
+    # start processes ....
+    - ssh -i ./keys/gslb_host root@mamba "docker rm -f pygslb_development"
+    - ssh -i ./keys/gslb_host root@mamba "nohup docker run -d -v /tmp:/tmp -p 81:81 --hostname mamba.fl.sprintlink.net -e TZ=America/New_York --name 'pygslb_development' -e MODE=development -e CONFIGPATH=/app/config_develop.yaml noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest"
+
+    # soft shutdown, this allows the cache to be written to disk
+    - >-
+         curl
+         -f
+         -n
+         -X GET http://viper:81/gslb/api/v1.0/server/shutdown
+         -d ''
+         -H "Accept: application/json"
+         -u admin:DNAops12
+
+    # sleep to ensure docker container shutsdown proper
+    - sleep 10
+
+    # login to gitlab so we ensure we can access the remote repo if needed
+    - ssh -i ./keys/gslb_host root@viper "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+
+    # start processes ....
+    - ssh -i ./keys/gslb_host root@viper "docker rm -f pygslb_development"
+    - ssh -i ./keys/gslb_host root@viper "nohup docker run -d -v /tmp:/tmp -p 81:81 --hostname viper.res.sprintlink.net -e TZ=America/New_York --name 'pygslb_development' -e MODE=development -e CONFIGPATH=/app/config_develop.yaml noshub.fl.sprintlink.net:4567/dns/pygslb:dev-latest"
+  tags:
+    - docker
+
+deploy_production:
+  stage: deploy
+  only:
+    - master
+  script:
+    #so we can ssh into remote hosts
+    - chmod 500 keys/gslb_host
+
+
+    # soft shutdown, this allows the cache to be written to disk
+    - >-
+         curl
+         -f
+         -n
+         -X GET http://mamba:80/gslb/api/v1.0/server/shutdown
+         -d ''
+         -H "Accept: application/json"
+         -u admin:DNAops12
+
+    # sleep to ensure docker container shutsdown proper
+    - sleep 10
+
+    # login to gitlab so we ensure we can access the remote repo if needed
+    - ssh -i ./keys/gslb_host root@mamba "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+
+    # start processes ....
+    - ssh -i ./keys/gslb_host root@mamba "docker rm -f pygslb_production"
+    - ssh -i ./keys/gslb_host root@mamba "nohup docker run -d -v /tmp:/tmp -p 80:80 --hostname mamba.fl.sprintlink.net -e TZ=America/New_York --name 'pygslb_production' -e MODE=production -e CONFIGPATH=/app/config_production.yaml noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest"
+
+    # soft shutdown, this allows the cache to be written to disk
+    - >-
+         curl
+         -f
+         -n
+         -X GET http://viper:80/gslb/api/v1.0/server/shutdown
+         -d ''
+         -H "Accept: application/json"
+         -u admin:DNAops12
+
+    # sleep to ensure docker container shutsdown proper
+    - sleep 10
+
+    # login to gitlab so we ensure we can access the remote repo if needed
+    - ssh -i ./keys/gslb_host root@viper "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN noshub.fl.sprintlink.net:4567"
+
+    # start processes ....
+    - ssh -i ./keys/gslb_host root@viper "docker rm -f pygslb_production"
+    - ssh -i ./keys/gslb_host root@viper "nohup docker run -d -v /tmp:/tmp -p 80:80 --hostname viper.res.sprintlink.net -e TZ=America/New_York --name 'pygslb_production' -e MODE=production -e CONFIGPATH=/app/config_production.yaml noshub.fl.sprintlink.net:4567/dns/pygslb:prod-latest"
+  tags:
+    - docker
