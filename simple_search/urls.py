@@ -20,7 +20,7 @@ from simple_search.api import views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('search', views.search)
+    path('search', views.SearchView.as_view())
 ]
 
 urlpatterns = format_suffix_patterns(urlpatterns)
